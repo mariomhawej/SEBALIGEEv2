@@ -1,0 +1,983 @@
+// A UI to interactively filter a collection, select an individual image
+// from the results, display it with a variety of visualizations, and export it.
+    
+// The namespace for our application.  All the state is kept in here.
+var app = {};
+
+/** Creates the UI panels. */
+app.createPanels = function() {
+  /* The introduction section. */
+  app.intro = {
+    panel: ui.Panel([
+        ui.Label({
+        value: 'SEBALIGEE v.2',
+        style: {fontWeight: 'bold', fontSize: '44px', margin: '10px 10px', fontFamily: 'serif'}
+      }),
+        ui.Label({
+        value: ' Global Monthly ET and aKc Estimations',
+        style: {fontWeight: 'bold', fontSize: '22px', margin: '10px 5px', textAlign: 'center', fontFamily: 'serif'}
+      }),
+        ui.Label({
+        value: ' This application allows to assess ET and aKc values' +
+               ' based on the 30-m Landsat-8 satellite collection. User has to only include the requested month and year'
+               + ' as well as the study area. SEBALIGEE v.2 will do the rest!',
+        style: {fontWeight: '50', fontSize: '11px', margin: '10px 5px', textAlign: 'left', fontFamily: 'serif'}
+      }),
+      ui.Label({
+        value: 'For further information, kindly refer to XXX.',
+        style: {fontWeight: '30', fontSize: '9px', margin: '10px 5px', textAlign: 'left', fontFamily: 'serif'}
+      }),
+    ]),
+  };
+
+  /* The Date filter. */
+  app.filters = {
+    mapCenter: ui.Checkbox({label: 'Filter to map center', value: true,
+    style: {fontSize: '12px', fontFamily: 'serif'}}
+    ),
+    m: ui.Textbox({placeholder:'e.g. 05', value: '05', 
+    style: {fontFamily: 'serif'}}),
+    year: ui.Textbox({placeholder:'e.g. 2020', value: '2020', 
+    style: {fontFamily: 'serif'}}),
+    loadingLabel: ui.Label({
+      value: 'Loading...',
+      style: {stretch: 'vertical', color: 'gray', shown: false, fontFamily: 'serif'}
+    })
+  };
+
+  
+  /* The panel for the filter control widgets. */
+  app.filters.panel = ui.Panel({
+    widgets: [
+      ui.Label('Select Date', {fontWeight: 'bold', fontSize: '20px', fontFamily: 'serif'
+      , margin: '20px 0px 20px 0px'}),
+      ui.Label('Month', {fontWeight: 'bold', fontFamily: 'serif'}), app.filters.m,
+      ui.Label('Year', {fontWeight: 'bold', fontFamily: 'serif'}), app.filters.year,
+      app.filters.mapCenter,
+    ],
+    style: app.SECTION_STYLE
+  });
+  
+  /* The export section. */
+  app.export = {
+    button: ui.Button({
+      label: 'Calculate Global 30-m ET and aKc',
+      style: {fontWeight: 'bold', fontFamily: 'serif'},
+      // React to the button's click event.
+      onClick: function() {
+      
+  /** SEBALIGEE v.2 */
+    app.setLoadingMode(true);
+    
+    /* Retreive needed value */
+    var m = app.filters.m.getValue();
+    var year = app.filters.year.getValue();
+    var any = ee.Number.parse(year);
+        any.evaluate(function(ids) {
+          // Update the image picker with the given list of ids.
+          app.setLoadingMode(false);
+        });
+
+      //Variables Needed Month Number and Year Number
+      //Month number
+      //var m = 5;
+      //Year number
+      //var year = 2018;
+
+      // Starting and ending dates for Landsat and MODIS snow cover products
+      var start = new Date(year + "-" + m + "-01");
+      var end = new Date(year + "-" + m + "-28");
+      var year3 = ee.Number.parse(year).subtract(3);
+      
+      // Starting and ending dates for MODIS Land Cover product
+      var LC_year_1 = ee.Date.fromYMD(year3, 1, 1);
+      var LC_year_2 = LC_year_1.advance(3, 'year');
+
+    /* Constant */
+    // Specific heat at constant pressure of air, kJ/kg K; refer to Malamos et al. (2015)
+      var c_p = 1.013;
+    // Ratio molecular weight of water vapor/dry air; refer to Malamos et al. (2015)
+      var epsilon = 0.622;
+    // Solar constant, kJ/m^2/h; refer to Malamos et al. (2015)
+      var a_s = 0.355;
+      var b_s = 0.68;
+      var I_s = 4921;
+    // Albedo constant; refer to Malamos et al. (2015)
+      var a_e = 0.56; 
+      var b_e = 0.08;
+    // Stefan-Boltzmann constant, kJ/(m^2 K^4 d); refer to Malamos et al. (2015)
+      var coef = 0.33;
+    // Other constants; refer to Malamos et al. (2015)
+      var a_l = 0.2;
+      var sigma = 0.0000049;
+      var c2 = 90;
+    // Conversion between Kelvin and Celsius
+      var c3 = 273.15;
+    // Von karman constant
+      var von = 0.41;
+    //Albedo for Et0; refer to https://www.fao.org/3/x0490e/x0490e07.htm
+      var Albedo = 0.23; 
+
+    //-------------------------------------------------------------------------
+    //-------------------------------------------------------------------------
+
+    /* Load Climatic data */
+    var climatic = ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY")
+                    .filterBounds(geometry)
+                    .filterDate(year + "-" + m + "-01", year + "-" + m + "-28");
+    
+    var climaticbands = climatic.toBands();
+    
+    var system = year + m;
+    
+    // Retreive the air temperature
+    var AT = climaticbands.select(system + "_" + 'temperature_2m').subtract(ee.Number(c3));
+    
+    // Retreive the dewpoint
+    var TD = climaticbands.select(system + "_" + 'dewpoint_temperature_2m').subtract(ee.Number(c3));
+    
+    // Retreive wind speed
+    var Wu = climaticbands.select(system + "_" + 'u_component_of_wind_10m');
+    
+    var Wv = climaticbands.select(system + "_" + 'v_component_of_wind_10m');
+    
+    var Wind_speed = Wu.multiply(Wu).add(Wv.multiply(Wv)).sqrt();
+    
+    // Load the SRTM image.
+    var srtm = ee.Image('CGIAR/SRTM90_V4');
+    
+    // Fetch elevation and slope
+    var elevation = srtm.select('elevation');
+    var slope = ee.Terrain.slope(elevation);
+        
+    // get coordinates image
+    var latlon = ee.Image.pixelLonLat();
+    
+    // Retreive lat and lon
+    var lat = latlon.select('latitude');
+    
+    var lon = latlon.select('longitude');
+    
+    // Map a function over MODIS
+    var getQABits = function(image, start, end, newName) {
+        // Compute the bits we need to extract.
+        var pattern = 0;
+        for (var i = start; i <= end; i++) {
+           pattern += Math.pow(2, i);
+        }
+        return image.select([0], [newName])
+                      .bitwiseAnd(pattern)
+                      .rightShift(start);
+    };
+    
+    var clear = function(image){
+      var img = image.select('state_1km');
+      return getQABits(img,0,1,'Clouds').expression("b(0) == 0 || b(0) == 3");
+    };
+    
+    var get_cloudcover = function(year, month, geometry) {
+      geometry=ee.Geometry(geometry);
+    
+    // Load morning (Terra) MODIS data.
+      var morning = ee.ImageCollection('MODIS/006/MOD09GA')
+            .filterDate(start, end)
+            .filterBounds(geometry);
+      var clear_days = morning.map(clear);
+      var cloudcover = clear_days.reduce(ee.Reducer.mean()).rename('thres');
+      return cloudcover;
+    };
+    
+    var cloudcover = get_cloudcover(year, m, geometry);
+    //Map.addLayer(cloudcover,{min: 0, max: 100, palette: ['black','yellow']},'CLEAR DAYS %');
+    
+    // Compute cloud
+    var sunduration_1 = cloudcover.select('thres');
+
+    /* ET0 Calculation */
+    //Specific heat (kJ/kg) for a given temperature (C) 
+      var templamda = ee.Image(1).multiply(ee.Number(2501)).subtract(AT.multiply(ee.Number(2.361)));
+    
+    //Standard pressure (hPa) for a given elevation (m)
+      var temppressure_1 = elevation.multiply(ee.Number(0.00002256));
+      var temppressure_2 = ee.Image(1).multiply(ee.Number(1)).subtract(temppressure_1);
+      var temppressure_3 = temppressure_2.pow(5.256);
+      var temppressure = temppressure_3.multiply(ee.Number(1013));
+    
+    //Air density (kg/m^3) at a given air pressure (hPa) and temperature (oC) 
+      var tempdensity_1 = temppressure.multiply(ee.Number(0.3486));
+      var tempdensity_2 = AT.add(ee.Number(c3));
+      var tempdensity = tempdensity_1.divide(tempdensity_2);
+    
+    //Psychrometric constant (hPa/C) for a given pressure (hPa) and Specific heat (kJ/kg) 
+      var tempgamma_1 = ee.Number(c_p).divide(ee.Number(epsilon));
+      var tempgamma_2 = temppressure.divide(templamda);
+      var tempgamma = ee.Image(1).multiply(ee.Number(tempgamma_1)).multiply(tempgamma_2);
+    
+    //Saturation vapor pressure (hPa) for a given temperature (C) (6.11 10 × (7.5 × AT/( 237.3 + AT)))
+      var tempe_s_1 = AT.add(237.3);
+      var tempe_s_2 = AT.multiply(17.27);
+      var tempe_s_3 = tempe_s_2.divide(tempe_s_1);
+      var tempe_s_4 = tempe_s_3.exp();
+      var tempe_s = tempe_s_4.multiply(6.11);
+    
+    //Actual vapor pressure (hPa) for a given temperature (C) 
+      var tempe_1 = TD.add(ee.Number(237.3));
+      var tempe_2 = TD.multiply(ee.Number(17.27));
+      var tempe_3 = tempe_2.divide(tempe_s_1);
+      var tempe_4 = tempe_3.exp();
+      var tempe = tempe_4.multiply(ee.Number(6.11));
+    
+    //Slope of the saturation vapor pressure curve (hPa/C) for a given temperature (C) 
+      var tempdelta_1 = tempe_s_1.pow(2);
+      var tempdelta = tempe_s.divide(tempdelta_1).multiply(ee.Number(4098));
+    
+    //Astronomical quantities 
+    var j;
+      if (m == 1) {
+        j = 17;
+    } else if (m == 2) { 
+        j = 46;
+    } else if (m == 3) { 
+        j = 75;
+    } else if (m == 4) { 
+        j = 105;
+    } else if (m == 5) { 
+        j = 135;
+    } else if (m == 6) { 
+        j = 162;
+    } else if (m == 7) { 
+        j = 198;
+    } else if (m == 8) { 
+        j = 228;
+    } else if (m == 9) { 
+        j = 258;
+    } else if (m == 10) { 
+        j = 289;
+    } else if (m == 11) { 
+        j = 319;
+    } else if (m == 12) {
+        j = 345;
+    }
+    
+    //Solar declination (rad) for a given day
+      var tempdeclination = -0.4093 * Math.cos (2 * 3.1415 * j / 365 + 0.16);
+      
+    //Solar declination (degree) for a given day
+      var tempdeclinationd = ee.Number(tempdeclination).multiply(180).divide(3.1415);
+    
+    // Lat in radian
+    var lat_rad = lat.multiply(ee.Number(3.1415)).divide(ee.Number(180));
+    
+    //Sun Duration
+      var sunduration_2 = ee.Image(1).multiply(ee.Number(2)).divide(ee.Number(15));
+      var sunduration_3 = ee.Image(1).multiply(ee.Number(-1)).multiply(ee.Number(tempdeclination).tan()).multiply(lat_rad.tan());
+      var sunduration_4 = sunduration_3.acos();
+      var sunduration_5 = ee.Image(1).multiply(sunduration_2).multiply(sunduration_4)
+                          .multiply(ee.Number(180)).divide(ee.Number(3.1415));
+      var sunduration = sunduration_5.multiply(sunduration_1).divide(24);
+    
+    //print(sunduration, 'mean Sun Duration');
+    
+    //Eccentricity for a given day
+      var tempeccentricity = 1 + 0.034 * Math.cos (2 * 3.1415 * j / 365 - 0.05);
+    
+    //Sunset angle (rad) for a given day and lattitude 
+      var tempphi_rad = lat.multiply(ee.Number(3.1415)).divide(ee.Number(180));
+      var tempphi = ee.Image(1).multiply(ee.Number(-1)).multiply(tempphi_rad.tan()).multiply(ee.Number(tempdeclination).tan());
+    
+    //For lattitude > 66.5 (or < - 66.5) 
+      var tempo_s = tempphi;
+      var o_s = tempo_s.expression(
+          "(b1 > 1.161) ? 0" +
+          ": b2",
+          {
+          'b1': tempo_s.abs(),
+          'b2': tempo_s.acos(),
+    });
+      
+    //Extraterrestial shortwave radiation (kJ/m^2/d) for a given day and lattitude 
+      var S0temp = ee.Image(1).multiply(ee.Number(24).divide(ee.Number(3.1415))).multiply(ee.Number(I_s)).multiply(ee.Number(tempeccentricity));
+      var tempS_0 = ee.Image(1).multiply(S0temp).multiply(o_s.multiply(tempphi_rad.sin()) 
+      .multiply(ee.Number(tempdeclination).sin()).add(tempphi_rad.cos() 
+      .multiply(ee.Number(tempdeclination).cos()).multiply(o_s.sin())));
+    
+      var tempf_s_1 = ee.Image(1).multiply(ee.Number(a_s));
+      var tempf_s_2 = ee.Image(1).multiply(ee.Number(b_s));
+      var tempf_s_3 = ee.Image(1).subtract(sunduration);
+      var tempf_s = tempf_s_1.add(tempf_s_2.multiply(tempf_s_3));
+    
+    //Shortwave radiation (kJ/m^2/d) for given albedo, fraction of sunshine duration 
+      var tempS_n_1 = ee.Image(1).multiply((ee.Number(1).subtract(ee.Number(Albedo))));
+      var tempS_n_2 = (tempf_s).multiply(tempS_0);
+      var tempS_n = tempS_n_1.multiply(tempS_n_2);
+    
+    //Lo
+      var tempe_n_1 = tempe.sqrt();
+      var tempe_n_2 = tempe_n_1.multiply(ee.Number(b_e));
+      var tempe_n_3 = ee.Image(1).multiply(ee.Number(1)).multiply(ee.Number(a_e));
+      var tempe_n = tempe_n_3.subtract(tempe_n_2);
+    
+      var tempf_l_1 = ee.Image(1).multiply(ee.Number(a_l));
+      var tempf_l_2 = tempf_l_1.add(ee.Number(1).subtract(ee.Number(a_l)));
+      var tempf_l_3 = ee.Image(1).subtract(sunduration);
+      var tempf_l = tempf_l_2.multiply(tempf_l_3);
+    
+    //Longwave radiation (kJ/m^2/d) for given temperature (C), fraction of sunshine duration 
+      var tempL_n_1 = tempe_n.multiply(tempf_l).multiply(ee.Number(sigma));
+      var tempL_n_2 = AT.add(ee.Number(c3));
+      var tempL_n_3 = tempL_n_2.pow(4);
+      var tempL_n = tempL_n_1.multiply(tempL_n_3);
+    
+    //Mass transfer term for various cases of evaporation calculations
+      var tempgamma_rc_1 = ee.Image(1).add(Wind_speed.multiply(ee.Number(coef)));
+      var tempgamma_rc = tempgamma.multiply(tempgamma_rc_1);
+    
+    //Mass transfer term (kg/(hPa m^2 d)) of reference crop for given wind speed (m/s) 
+      var tempF_rc_1 = AT.add(ee.Number(c3));
+      var tempF_rc_2 = ee.Image(1).multiply(ee.Number(1)).multiply(ee.Number(c2));
+      var tempF_rc = tempF_rc_2.divide(tempF_rc_1).multiply(Wind_speed);
+    
+    //Penman-Montieth method
+    //A=Δ/(Δ+γ')
+      var tempA_1 = tempdelta.add(tempgamma_rc);
+      var tempA = tempdelta.divide(tempA_1);
+    
+    //Β= γ/(Δ+γ')
+      var tempB_1 = tempdelta.add(tempgamma_rc);
+      var tempB = tempgamma.divide(tempB_1);
+    
+      var tempD = tempe_s.subtract(tempe);
+    
+      var tempRna = tempS_n.subtract(tempL_n);
+    
+      var temp_Epm_1 = tempA.multiply(tempRna);
+      var temp_Epm_2 = tempB.multiply(tempF_rc).multiply(tempD);
+      var temp_Epm_3 = templamda.add(temp_Epm_2);
+      var temp_Epm = temp_Epm_1.divide(temp_Epm_3);
+      
+      var A = temp_Epm;
+    
+    var monthday;
+      if (m == 1 || m == 3 || m == 5 || m ==7 || m ==8 || m ==10 || m ==12) {
+        monthday = 31;
+    } else if (m == 2) { 
+        monthday = 28;
+    } else { 
+        monthday = 30;
+    }
+    
+    var ET0 = A.multiply(ee.Number(monthday));
+    //Map.addLayer(ET0,{min: 0, max: 200, "gamma":1},'ET0', false);
+    //print ('Monthly Reference Evapotranspiration (mm)', ET0);
+    
+    //-------------------------------------------------------------------
+    //-------------------------------------------------------------------
+
+    /* Load Landsat 8 SR data */
+    var L8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+          .filterDate(start, end)
+          .map(maskL8sr);
+
+    //print (landsat);
+    
+     // Cloud masking
+        function maskL8sr(image) {
+          // Bits 3 and 4 are cloud shadow and cloud, respectively.
+          var cloudShadowBitMask = (1 << 3);
+          var cloudsBitMask = (1 << 4);
+          // Get the pixel QA band.
+          var qa = image.select('QA_PIXEL');
+          // Both flags should be set to zero, indicating clear conditions.
+          var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                         .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+          return image.updateMask(mask);
+        }
+    
+    // Calculate median LST
+    var LSTm = L8.select('ST_B.*').median().multiply(0.00341802).add(149.0).subtract(273.15);
+    
+    // Calculate median Albedo
+    var opticalBands = L8.select('SR_.*').median().multiply(0.0000275).add(-0.2);
+    
+    var albedo_img = opticalBands.expression(
+      "(0.130*b1 + 0.115*b2 + 0.143*b3 + 0.180*b4 + 0.281*b5 + 0.108*b6 + 0.042*b7)",
+      {
+        b1: opticalBands.select('SR_B1'),
+        b2: opticalBands.select('SR_B2'),
+        b3: opticalBands.select('SR_B3'),
+        b4: opticalBands.select('SR_B4'),
+        b5: opticalBands.select('SR_B5'),
+        b6: opticalBands.select('SR_B6'),
+        b7: opticalBands.select('SR_B7'),
+      });
+      
+    // Calculate median NDVI
+    var ndvi = opticalBands.normalizedDifference(['SR_B5','SR_B4']);
+
+    /* ET0s Calculation  based on a changing albedo */
+    // Total radiation (kJ/m^2/d) for given albedo, fraction of sunshine duration 
+    var rad_1 = albedo_img.multiply(-1);
+    
+    var rad_2 = rad_1.add(1);
+    
+    var tempS_na = rad_2.multiply(tempf_s).multiply(tempS_0);
+    
+    //Penman-Montieth method
+    var tempRna1 = tempS_na.subtract(tempL_n);
+    
+      var temp_Epma_1 = tempA.multiply(tempRna1);
+      var temp_Epma_2 = tempB.multiply(tempF_rc).multiply(tempD);
+      var temp_Epma = (temp_Epma_1.divide(templamda)).add(temp_Epma_2); 
+    
+    // Calculate ET0s
+      var ET0s = temp_Epma.multiply(ee.Number(monthday));
+    //Map.addLayer(ET0s,{min: 0, max: 200, "gamma":1},'ET0s', false);
+
+    /* Hs Calculation */
+    // Total radiation (w/ha/month)
+    var rna = tempRna1.multiply(ee.Number(monthday)).divide(ee.Number(864));
+    
+    // Calculate G/Rn
+    var GRn_1 = AT.divide(albedo_img).multiply(albedo_img.multiply(0.0038).add((albedo_img.multiply(albedo_img).multiply(0.0074))));
+    var GRn_2 = ndvi.multiply(ndvi.multiply(ndvi.multiply(ndvi.multiply(0.98))));
+    var GRn_3 = GRn_2.multiply(-1).add(1);
+    var GRn = GRn_1.multiply(GRn_3);
+    
+    // Calculate soil heat flux
+    var G = GRn.multiply(rna);
+    
+    // Calculate LAI
+    var LAI_1 = ndvi.multiply(ndvi.multiply(ndvi.multiply(9.519)));
+    var LAI_2 = ndvi.multiply(ndvi.multiply(0.104));
+    var LAI_3 = ndvi.multiply (1.236);
+    var LAI = LAI_1.add(LAI_2).add(LAI_3).subtract(0.257);
+    
+    // Calculate surface roughness
+    var zom = LAI.multiply(0.018);
+    
+    // Calculate corrected zom
+    var zom_1 = slope.subtract(5);
+    var zom_2 = zom_1.divide(20).add(1);
+    var zom_c = zom.multiply(zom_2);
+    
+    // Calculate friction velocity
+    var friction_velocity = Wind_speed.multiply(ee.Number(von)).divide(((ee.Number(2)).divide(ee.Number(0.0246))).log());
+    
+    // Calculate wind speed at 200 m
+    var wind_200_1 = ee.Number(200).divide(ee.Number(0.0246));
+    var wind_200_2 = ee.Number(wind_200_1).log();
+    var wind_200 = friction_velocity.multiply(wind_200_2).divide(ee.Number(von));
+    
+    // Correct wind speed at 200 m
+    var u200_1 = elevation.divide(1000).multiply(0.1).add(1);
+    var u200_c = u200_1.multiply(wind_200);
+    
+    // Calculate friction at 200 m
+    var Fri_1 = u200_c.multiply(ee.Number(von));
+    var twoh = ee.Image(1).multiply(200);
+    var Fri_2 = twoh.divide(0.0246);
+    var Fri_3 = Fri_2.log();
+    var Fri_200 = Fri_1.divide(Fri_3);
+    
+    // Calculate momemtum roughness
+    var rah_1 = Fri_200.multiply(ee.Number(von));
+    var rah_2 = ee.Image(1).multiply(2.995);
+    var rah = rah_2.divide(rah_1);
+    
+    /* Load Merra 2 data and continue Hs Calculation */
+    var Merra2 = ee.ImageCollection("NASA/GSFC/MERRA/slv/2")
+          .filterDate(start, end)
+          .median();
+    
+    var dT_M2 = Merra2.select('T10M').subtract(Merra2.select('T2M'));
+    //Map.addLayer(dT_M2, {}, 'dT_M2');
+    
+    // Positive and negative values mask
+    var dT_M2_p = dT_M2.expression(
+          "(b1 < 0) ? 0" +
+          ": 1",
+          {
+          'b1': dT_M2,
+    });
+    
+    var dT_M2_n = dT_M2.expression(
+          "(b1 > 0) ? 0" +
+          ": 1",
+          {
+          'b1': dT_M2,
+    });
+    
+    // RF between dT positive, LST, albedo and NDVI values
+        //dT_M2 mutlipled by 10
+        var dT_M2_10_p = dT_M2.multiply(10).updateMask(dT_M2_p);
+    
+        // Sample the input imagery
+        var trainingrf_p = ee.Image.cat(
+        LSTm, 
+        albedo_img, 
+        ndvi, 
+        dT_M2_10_p.int()).stratifiedSample({
+          numPoints: 50,
+          classBand: 'T10M',
+          region: geometry,
+          scale: 50000,
+          tileScale: 16,
+          seed: 0
+        }).filter(ee.Filter.gt('T10M', 0));
+
+        // Make a Random Forest classifier and train it.
+        var classifierrf_p = ee.Classifier.smileRandomForest(130)
+        .train({
+          features: trainingrf_p,
+          classProperty: 'T10M',
+          //inputProperties: ['0_NDVI', '0_NDVI_1', '1_NDVI', '2_NDVI', '3_NDVI', '4_NDVI', '5_NDVI', '6_NDVI', '8_NDVI']
+        });
+
+        // Classify the input imagery and compute matrix
+        var dT_RF_p = ee.Image.cat(
+          LSTm, 
+          albedo_img, 
+          ndvi)
+                .classify(classifierrf_p).divide(10);
+
+    // RF between dT negative, LST, albedo and NDVI values
+        //dT_M2 mutlipled by -10
+        var dT_M2_10_n = dT_M2.multiply(-10).updateMask(dT_M2_n);
+    
+        // Sample the input imagery
+        var trainingrf_n = ee.Image.cat(
+        LSTm, 
+        albedo_img, 
+        ndvi, 
+        dT_M2_10_n.int()).stratifiedSample({
+          numPoints: 50,
+          classBand: 'T10M',
+          region: geometry,
+          scale: 50000,
+          tileScale: 16,
+          seed: 0
+        }).filter(ee.Filter.gt('T10M', 0));
+
+        // Make a Random Forest classifier and train it.
+        var classifierrf_n = ee.Classifier.smileRandomForest(130)
+        .train({
+          features: trainingrf_n,
+          classProperty: 'T10M',
+          //inputProperties: ['0_NDVI', '0_NDVI_1', '1_NDVI', '2_NDVI', '3_NDVI', '4_NDVI', '5_NDVI', '6_NDVI', '8_NDVI']
+        });
+
+        // Classify the input imagery and compute matrix //
+        var dT_RF_n = ee.Image.cat(
+          LSTm, 
+          albedo_img, 
+          ndvi)
+                .classify(classifierrf_n).divide(-10);
+        
+        // Final dT_RF computation
+        var dT_RF = dT_RF_p.expression(
+          "(b3 > 0) ? b1" +
+          ": (b3 < 0) ? b2" +
+          ": b3",
+          {
+          'b1': dT_RF_p,
+          'b2': dT_RF_n,
+          'b3': dT_M2,
+    });
+        
+        //Map.addLayer(dT_RF, {}, 'dT_RF');
+        
+    // Calculate sensible heat flux
+    var H_1 = dT_RF.multiply(tempdensity).multiply(1004).divide(rah);
+
+    /* Internal calibrations and H and ET Calculations */
+    // Find Water Area
+    var MCD12Q1 = ee.ImageCollection('MODIS/006/MCD12Q1')
+           .filterDate(LC_year_1, LC_year_2);
+    
+    var LC = MCD12Q1.select('LC_Type1');
+    
+    var medianLC = LC.median();
+    
+    // Retreive water pixels sensible heat
+    var water_qa = medianLC.expression(
+          "(b1 == 17) ? 1" +
+          ": 0",
+          {
+          'b1': medianLC.select('LC_Type1') ,
+    });
+    
+    var waterH1 = H_1.updateMask(water_qa);
+    
+    // Reduce the region
+    var dict_w1 = waterH1.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var meanhw1 = dict_w1.get('T10M');
+
+    // Calculate surface roughness of grass
+    var rah_grass = ee.Image(1).multiply(ee.Number(208)).divide(Wind_speed);
+    
+    // Reduce the region
+    var dict_dtw = LSTm.reduceRegion({
+      reducer: ee.Reducer.stdDev(),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var meandtw_1 = dict_dtw.get('ST_B10');
+    var meandtw = ee.Number(meandtw_1).multiply(4);
+    
+    var waterH3 = tempdensity.multiply(1004).multiply(meandtw).divide(rah_grass);
+    
+    // Reduce the region
+    var dict_w3 = waterH3.reduceRegion({
+      reducer: ee.Reducer.stdDev(),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var meanhw3 = dict_w3.get('constant');
+    
+    var meanhwnew = ee.Number(meanhw3).subtract(ee.Number(meanhw1));
+    
+    // Calculate new sensible heat
+    var H = H_1.add(ee.Number(meanhwnew));
+    
+    // Calculate LET
+    var LET = rna.subtract(G).subtract(H);
+    
+    // Calculate EF
+    var EF_1 = rna.subtract(G);
+    var EF = LET.divide(EF_1);
+    
+    // Saturation Vapor Pressure at the air temperature (kPa):
+    var esat_1 = AT.multiply(17.27);
+    var esat_2 = AT.add(237.3);
+    var esat_3 = esat_1.divide(esat_2);
+    var esat_4 = esat_3.exp();
+    var esat = esat_4.multiply(0.6108);
+    
+    //  Actual vapour pressure (kPa), FAO 56, eq 19.:
+    var eact = tempe;
+    
+    // Advection factor
+    var AF_1 = esat.subtract(eact);
+    var AF_2 = AF_1.multiply(0.08).subtract(1);
+    var AF_3 = AF_2.exp();
+    var AF_4 = AF_3.multiply(EF).multiply(0.985);
+    var AF = AF_4.add(1);
+    
+    // Calculate ETa from satellite
+    var Etas = EF.multiply(rna).multiply(AF).divide(28.356).divide(245000000)
+              .multiply(86400000).multiply(ee.Number(monthday));
+    
+    // Calculate Kc
+      var Kc_1 = Etas.divide(ET0s);
+    
+      var Kc_2 = Kc_1.expression(
+          "(b1 > 1.5*b2) | (b1 < 0) ? 0" +
+          ": b1",
+          {
+          'b1': Kc_1,
+          'b2': ET0,
+    });
+    
+    var Kc = Kc_2.updateMask(Kc_2);
+    
+    // Calculate new ETa
+      var Eta_1 = Kc.multiply(ET0);
+      
+      var Eta = Eta_1.multiply(0.6623).add(23.781);
+
+    
+    var Kc_n_1 = Eta.divide(ET0);
+    
+    var Kc_n_2 = Kc_n_1.expression(
+          "(b1 > 1.5) | (b1 < 0) ? 0" +
+          ": b1",
+          {
+          'b1': Kc_n_1,
+    });
+    
+    var Kc_n = Kc_n_2.updateMask(Kc_n_2);
+
+    //-------------------------------------------------------------------------
+    //-------------------------------------------------------------------------
+
+    /* Statistics */
+    // Reduce the region. The region parameter is the Feature geometry.
+    var meanDictionary = Eta.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 30,
+      tileScale: 16,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var meaneta = meanDictionary.get('constant');
+    //print('Mean Eta (mm) ' + system, meaneta);
+    
+    // Reduce the region. The region parameter is the Feature geometry.
+    var meanDictionarystd = Eta.reduceRegion({
+      reducer: ee.Reducer.stdDev(),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var stdeta = meanDictionarystd.get('constant');
+    //print('Std Eta (mm) ' + system, stdeta);
+    
+    // Reduce the region. The region parameter is the Feature geometry.
+    var meanDictionary1 = Kc_n.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var meanet0 = meanDictionary1.get('constant');
+    //print('Mean Kc ' + system, meanet0);
+    
+    // Reduce the region. The region parameter is the Feature geometry.
+    var meanDictionary1s = Kc_n.reduceRegion({
+      reducer: ee.Reducer.stdDev(),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true
+    });
+    
+    // The result is a Dictionary.  Print it.
+    var meanet0s = meanDictionary1s.get('constant');
+    //print('Std Kc ' + system, meanet0s);
+    
+    //-------------------------------------------------------------------------
+    //-------------------------------------------------------------------------
+
+    /* Visualizations */
+    // Define the visualization parameters.
+    var visParams = {
+      bands: ['SR_B4', 'SR_B3', 'SR_B2'],
+    min: 0,
+    max: 0.3,
+    };
+    
+    var visParams_albedo = {min: 0, max: 300, palette: 'FFFFFF, CE7E45, DF923D, F1B555, FCD163, 99B718, 74A901, 66A000, 529400,' +
+        '3E8601, 207401, 056201, 004C00, 023B01, 012E01, 011D01, 011301'};
+        
+    var visParams_ndvi = {min: -0.2, max: 0.8, palette: 'FFFFFF, CE7E45, DF923D, F1B555, FCD163, 99B718, 74A901, 66A000, 529400,' +
+        '3E8601, 207401, 056201, 004C00, 023B01, 012E01, 011D01, 011301'};
+    
+    var visParams_rn = {min: 0, max: 700, palette: 'FFFFFF, CE7E45, DF923D, F1B555, FCD163, 99B718, 74A901, 66A000, 529400,' +
+        '3E8601, 207401, 056201, 004C00, 023B01, 012E01, 011D01, 011301'};
+        
+    var landSurfaceTemperatureVis = {
+      min: 14000.0,
+      max: 16000.0,
+      palette: [
+        '040274', '040281', '0502a3', '0502b8', '0502ce', '0502e6',
+        '0602ff', '235cb1', '307ef3', '269db1', '30c8e2', '32d3ef',
+        '3be285', '3ff38f', '86e26f', '3ae237', 'b5e22e', 'd6e21f',
+        'fff705', 'ffd611', 'ffb613', 'ff8b13', 'ff6e08', 'ff500d',
+        'ff0000', 'de0101', 'c21301', 'a71001', '911003'
+      ],
+    };
+    
+    // Map results
+    Map.centerObject(geometry,9);
+    Map.addLayer(opticalBands,visParams,'Landsat-8 RGB ' + system);
+    Map.addLayer(ndvi,visParams_ndvi,'Landsat-8 NDVI ' + system);
+    //Map.addLayer(albedo_img,visParams_albedo,'Sentinel-2 albedo');
+    Map.addLayer(Eta,visParams_albedo,'Landsat-8 Eta ' + system);
+
+    /* Exporting */
+    // Export the image, specifying scale and region.
+    Export.image.toDrive({
+      image: albedo_img,
+      description: 'albedo_'+ system,
+      scale: 30,
+      maxPixels: 1e12,
+      region: geometry
+    });
+    
+    // Export the image, specifying scale and region.
+    Export.image.toDrive({
+      image: ndvi,
+      description: 'NDVI_'+ system,
+      scale: 30,
+      maxPixels: 1e12,
+      region: geometry
+    });
+    
+    // Export the image, specifying scale and region.
+    Export.image.toDrive({
+      image: Eta,
+      description: 'ETa_'+ system,
+      scale: 30,
+      maxPixels: 1e12,
+      region: geometry
+    });
+    
+    // Export a cloud-optimized GeoTIFF.
+    Export.image.toDrive({
+      image: LSTm,
+      description: 'LST_' + system,
+      scale: 30,
+      region: geometry,
+      fileFormat: 'GeoTIFF',
+      maxPixels: 1e12,
+      formatOptions: {
+        cloudOptimized: true
+      }
+    });
+    
+    // Export a cloud-optimized GeoTIFF.
+    Export.image.toDrive({
+      image: Kc_n,
+      description: 'aKc_' + system,
+      scale: 30,
+      region: geometry,
+      fileFormat: 'GeoTIFF',
+      maxPixels: 1e12,
+      formatOptions: {
+        cloudOptimized: true
+      }
+    });
+    
+    // Export a cloud-optimized GeoTIFF.
+    Export.image.toDrive({
+      image: medianLC,
+      description: 'LC_' + system,
+      scale: 30,
+      region: geometry,
+      fileFormat: 'GeoTIFF',
+      maxPixels: 1e12,
+      formatOptions: {
+        cloudOptimized: true
+      }
+    });
+    
+    //-------------------------------------------------------------------------
+    //-------------------------------------------------------------------------
+
+      }}
+      )
+    };
+
+
+  /* The panel for the export section with corresponding widgets. */
+  app.export.panel = ui.Panel({
+    widgets: [
+      ui.Label('Start Processing', {fontWeight: 'bold', fontSize: '20px', fontFamily: 'serif',
+        margin: '25px 0px 10px 0px'
+      }),
+      app.export.button
+    ],
+    style: app.SECTION_STYLE
+  });
+};
+
+/** Creates the app helper functions. */
+app.createHelpers = function() {
+    /**
+   * Enables or disables loading mode.
+   * @param {boolean} enabled Whether loading mode is enabled.
+   */
+  app.setLoadingMode = function(enabled) {
+    // Set the loading label visibility to the enabled mode.
+    app.filters.loadingLabel.style().set('shown', enabled);
+    // Set each of the widgets to the given enabled mode.
+    var loadDependentWidgets = [
+      app.filters.m,
+      app.filters.year,
+      app.filters.mapCenter,
+      app.export.button
+    ];
+    loadDependentWidgets.forEach(function(widget) {
+      widget.setDisabled(enabled);
+    });
+  };
+
+
+    };
+
+/** Creates the application interface. */
+app.boot = function() {
+  app.createPanels();
+  app.createHelpers();
+  var main = ui.Panel({
+    widgets: [
+      app.intro.panel,
+      app.filters.panel,
+      app.export.panel,
+    ],
+    style: {width: '300px', padding: '8px'}
+  });
+  Map.setCenter(-97, 26, 9);
+  ui.root.insert(0, main);
+};
+
+  /** Legend setup */
+
+      // Creates a color bar thumbnail image for use in legend from the given color
+      // palette.
+      function makeColorBarParams(palette) {
+        return {
+          bbox: [0, 0, 1, 0.1],
+          dimensions: '10x100',
+          format: 'png',
+          min: 0,
+          max: 1,
+          palette: palette,
+        };
+      }
+      
+      var vis = {min: 0, max: 300, palette: 'FFFFFF, CE7E45, DF923D, F1B555, FCD163, 99B718, 74A901, 66A000, 529400,' +
+        '3E8601, 207401, 056201, 004C00, 023B01, 012E01, 011D01, 011301'};
+        
+      // Create the color bar for the legend.
+      var colorBar = ui.Thumbnail({
+        image: ee.Image.pixelLonLat().select(0),
+        params: makeColorBarParams(vis.palette),
+        style: {stretch: 'horizontal', margin: '10px 8px', maxHeight: '5px'},
+      });
+      
+      // Create a panel with three numbers for the legend.
+      var legendLabels = ui.Panel({
+        widgets: [
+          ui.Label(vis.min, {margin: '4px 8px', fontSize: '11px', fontFamily: 'serif', color: 'blue', fontWeight: 'bold'}),
+          ui.Label(
+              ((vis.max-vis.min) / 2+vis.min),
+              {margin: '4px 8px', textAlign: 'center', stretch: 'horizontal', fontSize: '11px', fontFamily: 'serif', color: 'green', fontWeight: 'bold'}),
+          ui.Label(vis.max, {margin: '4px 8px', fontSize: '11px', fontFamily: 'serif', color: 'red', fontWeight: 'bold'})
+        ],
+        layout: ui.Panel.Layout.flow('horizontal'),
+      });
+      
+      var legendTitle = ui.Label({
+        value: 'Evapotranspiration rates (mm)',
+        style: {fontWeight: 'bold', fontFamily: 'serif'}
+      });
+      
+      // Add the legendPanel to the map.
+      var legendPanel = ui.Panel({widgets: [legendTitle, colorBar, legendLabels],
+      style: {position: 'bottom-right'} 
+      });
+      Map.add(legendPanel);
+      
+      //----------------------------------------------------------------
+      //----------------------------------------------------------------
+      
+app.boot();
